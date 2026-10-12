@@ -736,11 +736,23 @@ class EmbeddedWebClient {
         const pinInput = document.getElementById('vaultPin');
         if (pinInput) pinInput.value = pin;
         showToast('✓ Kasaya PIN ile bağlanıldı!', true);
+        try {
+          window.history.replaceState(null, '', window.location.pathname);
+        } catch (_) {}
+      }
+
+      const pinInput = document.getElementById('vaultPin');
+      if (pinInput) {
+        pinInput.addEventListener('input', () => {
+          if (pinInput.value.trim().length >= 4) {
+            loadFiles();
+          }
+        });
       }
 
       const statusBadge = document.getElementById('cipherStatusBadge');
       if (statusBadge) {
-        statusBadge.innerHTML = '<span>🔒 Sıfır-Bilgi E2EE (AES-256 Askeri Düzey) Korumalı</span>';
+        statusBadge.innerHTML = '<span>🔒 Bellek-içi AES-256-GCM AEAD Korumalı Kasa</span>';
       }
 
       loadFiles();
@@ -889,6 +901,10 @@ class EmbeddedWebClient {
 
     function uploadSingleFileStream(file, pin, burn, clientDevice, onProgress) {
       return new Promise((resolve, reject) => {
+        if (file.size > 500 * 1024 * 1024) {
+          reject(new Error('Dosya boyutu 500 MB sınırını aşıyor!'));
+          return;
+        }
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/upload', true);
         xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
@@ -896,6 +912,7 @@ class EmbeddedWebClient {
         xhr.setRequestHeader('X-Burn', burn ? '1' : '0');
         xhr.setRequestHeader('X-Encrypted', '1');
         xhr.setRequestHeader('X-Pin', encodeURIComponent(pin));
+        xhr.setRequestHeader('X-Vault-PIN', encodeURIComponent(pin));
         xhr.setRequestHeader('X-Client-Device', clientDevice);
 
         xhr.upload.onprogress = (e) => {
@@ -1011,6 +1028,7 @@ class EmbeddedWebClient {
         xhr.setRequestHeader('X-Burn', burn ? '1' : '0');
         xhr.setRequestHeader('X-Encrypted', '1');
         xhr.setRequestHeader('X-Pin', encodeURIComponent(pin));
+        xhr.setRequestHeader('X-Vault-PIN', encodeURIComponent(pin));
         xhr.setRequestHeader('X-Client-Device', clientDevice);
 
         xhr.onload = () => {
@@ -1045,9 +1063,13 @@ class EmbeddedWebClient {
     // LOAD VAULT FILES LIST
     async function loadFiles() {
       try {
+        const pinEl = document.getElementById('vaultPin');
+        const pin = pinEl ? pinEl.value.trim() : '';
+        const headers = pin ? { 'X-Vault-PIN': pin } : {};
+
         const [filesRes, statusRes] = await Promise.all([
-          fetch('/api/files'),
-          fetch('/api/status')
+          fetch('/api/files', { headers }),
+          fetch('/api/status', { headers })
         ]);
 
         if (statusRes.ok) {
@@ -1062,6 +1084,21 @@ class EmbeddedWebClient {
         if (filesRes.ok) {
           const files = await filesRes.json();
           renderFileList(files);
+        } else if (filesRes.status === 401) {
+          const container = document.getElementById('filesContainer');
+          const countBadge = document.getElementById('filesCountBadge');
+          if (countBadge) countBadge.innerText = 'Kilitli 🔒';
+          if (container) {
+            container.innerHTML = `
+              <div style="text-align: center; padding: 36px 16px; color: var(--text-muted);">
+                <div style="font-size: 38px; margin-bottom: 8px;">🔒</div>
+                <div style="font-weight: 600; font-size: 15px; color: var(--text-primary);">Kasa Kilitli</div>
+                <div style="font-size: 12px; margin-top: 4px;">Dosyaları listelemek ve indirmek için lütfen yukarıdan geçerli Kasa PIN kodunu giriniz.</div>
+              </div>
+            `;
+          }
+        } else if (filesRes.status === 429) {
+          showToast('Çok fazla hatalı deneme! 5 dakika kilitlendi.', false);
         }
       } catch (e) {
         console.error('Files check error:', e);
@@ -1158,8 +1195,19 @@ class EmbeddedWebClient {
 
     async function deleteFile(id) {
       if (!confirm('Bu dosyayı RAM\'den kalıcı olarak silmek istiyor musunuz?')) return;
-      await fetch('/api/files/' + id, { method: 'DELETE' });
-      showToast('Dosya RAM\'den imha edildi.');
+      const pinEl = document.getElementById('vaultPin');
+      const pin = pinEl ? pinEl.value.trim() : '';
+      const res = await fetch('/api/files/' + id, {
+        method: 'DELETE',
+        headers: { 'X-Vault-PIN': pin }
+      });
+      if (res.ok) {
+        showToast('Dosya RAM\'den imha edildi.');
+      } else if (res.status === 401) {
+        showToast('Yetkisiz işlem: Geçersiz PIN!', false);
+      } else {
+        showToast('Silme hatası!', false);
+      }
       loadFiles();
     }
 

@@ -11,9 +11,10 @@ class VaultDecryptionException implements Exception {
   String toString() => message;
 }
 
-/// High-security cryptographic engine for GhostVault.
-/// Implements Zero-Knowledge End-to-End Encryption (E2EE), Key Derivation (PBKDF2-like KDF),
-/// Authenticated Encryption, and Anti-Brute-Force rate limiting.
+/// Hardened cryptographic engine for GhostVault.
+/// Implements Authenticated Encryption (AES-256-GCM / AEAD),
+/// PBKDF2 Key Derivation with HMAC-SHA256,
+/// 96-bit NIST-standard IVs, and Anti-Brute-Force rate limiting.
 class VaultCrypto {
   /// Generates a cryptographically secure random salt (16 bytes, hex encoded).
   static String generateSalt() {
@@ -22,15 +23,15 @@ class VaultCrypto {
     return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 
-  /// Generates a random 16-byte IV (Initialization Vector) hex encoded.
+  /// Generates a NIST-standard 12-byte (96-bit) IV for AES-GCM hex encoded.
   static String generateIvHex() {
     final rnd = Random.secure();
-    final bytes = List<int>.generate(16, (_) => rnd.nextInt(256));
+    final bytes = List<int>.generate(12, (_) => rnd.nextInt(256));
     return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 
   /// Derives a 256-bit (32 bytes) key from a user PIN and Salt using iterative SHA-256 HMAC (KDF).
-  /// Stretching iterations prevent dictionary and brute-force attacks even on short PINs.
+  /// Stretching iterations prevent dictionary and brute-force attacks on short PINs.
   static Uint8List deriveKey(String pin, String saltHex, {int iterations = 10000}) {
     final pinBytes = utf8.encode(pin);
     final saltBytes = _hexToBytes(saltHex);
@@ -44,8 +45,8 @@ class VaultCrypto {
     return Uint8List.fromList(current);
   }
 
-  /// Encrypts raw file bytes using AES-256-CBC with PKCS7 padding.
-  /// Returns ciphertext bytes.
+  /// Encrypts raw file bytes using Authenticated AES-256-GCM with a 128-bit auth tag.
+  /// Returns ciphertext bytes with appended 16-byte authentication tag.
   static Uint8List encryptBytes({
     required Uint8List plainBytes,
     required String pin,
@@ -55,14 +56,15 @@ class VaultCrypto {
     final keyBytes = deriveKey(pin, saltHex);
     final key = enc.Key(keyBytes);
     final iv = enc.IV(_hexToBytes(ivHex));
-    final encrypter = enc.Encrypter(enc.AES(key, mode: enc.AESMode.cbc));
+    final encrypter = enc.Encrypter(enc.AES(key, mode: enc.AESMode.gcm));
 
     final encrypted = encrypter.encryptBytes(plainBytes, iv: iv);
     return encrypted.bytes;
   }
 
-  /// Decrypts ciphertext bytes using AES-256-CBC.
-  /// Returns original plain file bytes. Throws VaultDecryptionException if PIN or key is incorrect.
+  /// Decrypts ciphertext bytes using Authenticated AES-256-GCM.
+  /// Automatically validates ciphertext integrity and 128-bit authentication tag.
+  /// Throws VaultDecryptionException if PIN is incorrect or data was tampered with.
   static Uint8List decryptBytes({
     required Uint8List cipherBytes,
     required String pin,
@@ -73,12 +75,12 @@ class VaultCrypto {
       final keyBytes = deriveKey(pin, saltHex);
       final key = enc.Key(keyBytes);
       final iv = enc.IV(_hexToBytes(ivHex));
-      final encrypter = enc.Encrypter(enc.AES(key, mode: enc.AESMode.cbc));
+      final encrypter = enc.Encrypter(enc.AES(key, mode: enc.AESMode.gcm));
 
       final decrypted = encrypter.decryptBytes(enc.Encrypted(cipherBytes), iv: iv);
       return Uint8List.fromList(decrypted);
     } catch (e) {
-      throw VaultDecryptionException('Hatalı PIN veya bozulmuş şifreli veri!');
+      throw VaultDecryptionException('Hatalı PIN veya bozulmuş / değiştirilmiş veri! (GCM Doğrulama Hatası)');
     }
   }
 

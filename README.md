@@ -35,13 +35,16 @@ Geleneksel dosya aktarımında:
 
 | Özellik | Açıklama |
 | :--- | :--- |
-| **🛡️ E2EE AES-256-GCM** | Askeri düzeyde kimlik doğrulamalı şifreleme. PIN olmadan ağ trafiğini dinleyenler yalnızca anlamsız baytlar görür. |
+| **🛡️ Doğrulanmış AEAD (AES-256-GCM)** | 128-bit bütünlük etiketli AEAD şifreleme. PIN olmadan ağ trafiğini dinleyenler anlamsız baytlar görür; tahrif edilmiş veri anında reddedilir. |
 | **⚡ Grup Dosya Aktarımı** | Telefon web arayüzünde ve Windows masaüstünde çoklu dosya seçimi ve sıralı akış kuyruğu. |
 | **🔥 Burn After Reading** | `Tek okumada imha et` seçeneğiyle indirme sayacı dolan veri anında RAM'den bellek üzerine yazılarak silinir. |
 | **🌐 Sıfır Port Tüneli** | CGNAT ve modem kısıtlamalarını aşan otomatik TLS korumalı Cloudflare tüneli. |
 | **📱 Sıfır Kurulum Web İstemcisi** | Telefona hiçbir uygulama kurmaya gerek yoktur. QR kod okutulduğunda fütüristik Web Crypto SPA tarayıcı belleğine yüklenir. |
 | **📡 Bağımsız Ağ Seçici** | Wi-Fi, Ethernet veya Hotspot (Hava Boşluğu / Air-Gapped) ağ kartları arasında anında geçiş. |
 | **🖥️ P2P Masaüstü Köprüsü** | İki bilgisayar arasında PIN doğrulamalı uzak kasa senkronizasyonu. |
+| **🔐 Uç Nokta Erişim Denetimi** | `/api/files`, `/api/upload`, `/api/download`, imha ve panik uç noktalarında zorunlu `X-Vault-PIN` doğrulaması. |
+| **⏱️ Akıllı Hız Sınırlayıcı (Rate Limiting)** | Kaba kuvvet (brute-force) saldırılarına karşı 5 başarısız denemede 5 dakika otomatik IP dondurma. |
+| **🛡️ Bellek Taşma Koruması** | RAM tükenmesi ve DoS saldırılarına karşı 500 MB akış ve yükleme boyutu sınırı. |
 
 ---
 
@@ -101,9 +104,26 @@ Derlenen çalıştırılabilir dosya `build/windows/x64/runner/Release/ghost_vau
 
 ---
 
-## 🔒 Güvenlik Bildirimi (Security Notice)
+## 🔒 Güvenlik Mimarisi & Doğrulama (Security Architecture)
 
-GhostVault, verileri yalnızca geçici bilgisayar belleğinde (RAM) tutar. Bilgisayar kapatıldığında veya uygulama sonlandırıldığında veriler kalıcı olarak silinir ve manyetik plakalarda veya SSD çiplerinde hiçbir adli (forensic) iz kalmaz.
+GhostVault, yüksek güvenlikli geçici veri paylaşımı için çok katmanlı savunma (Defense-in-Depth) prensibiyle tasarlanmıştır:
+
+1. **Uçucu Bellek Mimarisi (RAM-Only Volatile Storage):** Veriler diske kalıcı olarak kaydedilmez. Oturum sonlandığında veya panik butonu tetiklendiğinde bellek serbest bırakılır.
+2. **Doğrulanmış AEAD Şifreleme (AES-256-GCM):** Galois/Counter Mode ve 12-byte IV kullanılarak şifrelenen veriler, 128-bit kimlik doğrulama etiketiyle korunur. Bozulmuş veya değiştirilmiş paketler derhal reddedilir.
+3. **Sertleştirilmiş API Uç Noktaları:** `/api/status` yanıtında PIN gibi hassas veriler asla ifşa edilmez. Tüm veri okuma, yükleme ve silme uç noktaları `X-Vault-PIN` başlığı veya onaylı belirteç gerektirir.
+4. **Kaba Kuvvet (Brute-Force) Koruması:** 5 başarısız yetkilendirme denemesinden sonra istemci IP adresi 5 dakika süreyle kilitlenir (HTTP 429).
+5. **Bellek Taşırma (DoS) Sınırı:** Tekil yüklemeler 500 MB ile sınırlandırılarak RAM tükenmesi ve hizmet engelleme riskleri engellenir.
+6. **Güvenli Tünel İletişimi:** OpenSSH fallback'inde `StrictHostKeyChecking=accept-new` kuralı uygulanarak ortadaki adam (MITM) saldırılarına karşı koruma sağlanır.
+
+### 🔏 İkili Dosya Bütünlük Doğrulaması (SHA-256 Verification)
+GhostVault v1.1.0 `GhostVault_Setup.exe` resmi SHA-256 sağlama değeri:
+```text
+e0e989b9c627bb353e2748c952ff31d08189f5f5cc208161b535036b1c682882
+```
+İndirdiğiniz kurulum dosyasının bütünlüğünü doğrulamak için PowerShell'de şu komutu çalıştırabilirsiniz:
+```powershell
+Get-FileHash -Algorithm SHA256 .\GhostVault_Setup.exe
+```
 
 ---
 

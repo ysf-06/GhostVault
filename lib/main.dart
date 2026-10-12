@@ -442,6 +442,11 @@ class _VaultDashboardScreenState extends State<VaultDashboardScreen> {
 
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
       final request = await client.getUrl(uri);
+      final pin = _remotePinController.text.trim();
+      if (pin.isNotEmpty) {
+        request.headers.set('X-Vault-PIN', pin);
+        request.headers.set('X-Pin', pin);
+      }
       final response = await request.close();
 
       if (response.statusCode == 200) {
@@ -478,8 +483,13 @@ class _VaultDashboardScreenState extends State<VaultDashboardScreen> {
 
   Future<void> _fetchRemoteFiles(String baseUrl) async {
     try {
+      final pin = _remotePinController.text.trim();
       final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
       final req = await client.getUrl(Uri.parse('$baseUrl/api/files'));
+      if (pin.isNotEmpty) {
+        req.headers.set('X-Vault-PIN', pin);
+        req.headers.set('X-Pin', pin);
+      }
       final res = await req.close();
       if (res.statusCode == 200) {
         final body = await res.transform(utf8.decoder).join();
@@ -497,6 +507,10 @@ class _VaultDashboardScreenState extends State<VaultDashboardScreen> {
     try {
       final client = HttpClient();
       final req = await client.getUrl(Uri.parse('$cleanUrl/api/download/${f['id']}'));
+      if (pin.isNotEmpty) {
+        req.headers.set('X-Vault-PIN', pin);
+        req.headers.set('X-Pin', pin);
+      }
       final res = await req.close();
 
       if (res.statusCode == 200) {
@@ -606,6 +620,10 @@ class _VaultDashboardScreenState extends State<VaultDashboardScreen> {
         req.headers.set('X-IV', iv);
         req.headers.set('X-Salt', salt);
         req.headers.set('X-Client-Device', 'GhostVault Masaüstü P2P Köprü');
+        if (pin.isNotEmpty) {
+          req.headers.set('X-Vault-PIN', pin);
+          req.headers.set('X-Pin', pin);
+        }
 
         req.add(cipherBytes);
         final res = await req.close();

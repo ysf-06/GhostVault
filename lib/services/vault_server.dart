@@ -115,10 +115,13 @@ class VaultServer extends ChangeNotifier {
             headers: {'content-type': 'application/json'});
       }
 
+      final clientPin = req.headers['x-vault-pin'] ?? req.headers['x-pin'] ?? req.url.queryParameters['pin'];
+      final isAuthenticated = clientPin != null && clientPin == _pin;
+
       return Response.ok(
         jsonEncode({
           'running': _isRunning,
-          'pin': _pin,
+          'authenticated': isAuthenticated,
           'salt': _saltHex,
           'totalFiles': memory.totalFiles,
           'memoryUsage': memory.formattedMemoryUsage,
@@ -134,8 +137,22 @@ class VaultServer extends ChangeNotifier {
       );
     });
 
-    // Active Files (Metadata only)
+    // Active Files (Metadata only - Requires Authentication)
     router.get('/api/files', (Request req) {
+      final clientIp = _extractClientIp(req);
+      if (rateLimiter.isLocked(clientIp)) {
+        return Response(429,
+            body: jsonEncode({
+              'error': 'Too many failed attempts. Locked out for 5 minutes.',
+              'remaining': rateLimiter.remainingLockoutSeconds(clientIp)
+            }),
+            headers: {'content-type': 'application/json'});
+      }
+      if (!_isAuthorized(req, clientIp)) {
+        return Response(401,
+            body: jsonEncode({'error': 'Unauthorized: Valid PIN required'}),
+            headers: {'content-type': 'application/json'});
+      }
       final list = memory.items.map((i) => i.toMetadataJson()).toList();
       return Response.ok(
         jsonEncode(list),
@@ -143,13 +160,27 @@ class VaultServer extends ChangeNotifier {
       );
     });
 
-    // Upload Handler (Stores bytes in RAM)
-        // Upload Handler (Stores bytes in RAM)
+    // Upload Handler (Stores bytes in RAM - Requires Authentication & Size Limit)
     router.post('/api/upload', (Request req) async {
       try {
         final clientIp = _extractClientIp(req);
         if (rateLimiter.isLocked(clientIp)) {
-          return Response(429, body: 'Rate limit exceeded');
+          return Response(429,
+              body: jsonEncode({'error': 'Rate limit exceeded. Locked out for 5 minutes.'}),
+              headers: {'content-type': 'application/json'});
+        }
+        if (!_isAuthorized(req, clientIp)) {
+          return Response(401,
+              body: jsonEncode({'error': 'Unauthorized: Valid PIN required'}),
+              headers: {'content-type': 'application/json'});
+        }
+
+        const maxUploadBytes = 500 * 1024 * 1024; // 500 MB RAM protection limit
+        final contentLength = req.contentLength;
+        if (contentLength != null && contentLength > maxUploadBytes) {
+          return Response(413,
+              body: jsonEncode({'error': 'Payload Too Large: Maximum upload size is 500MB'}),
+              headers: {'content-type': 'application/json'});
         }
 
         final rawFilename = req.headers['x-filename'] ?? 'secret_file.bin';
@@ -161,12 +192,19 @@ class VaultServer extends ChangeNotifier {
         final isEncrypted = req.headers['x-encrypted'] == '1';
 
         final bytesBuilder = BytesBuilder(copy: false);
+        var totalBytesRead = 0;
         await for (final chunk in req.read()) {
+          totalBytesRead += chunk.length;
+          if (totalBytesRead > maxUploadBytes) {
+            return Response(413,
+                body: jsonEncode({'error': 'Payload Too Large: Stream exceeded 500MB limit'}),
+                headers: {'content-type': 'application/json'});
+          }
           bytesBuilder.add(chunk);
         }
         var bytes = bytesBuilder.toBytes();
 
-        // If client requested military encryption into RAM and didn't pre-encrypt
+        // If client requested encryption into RAM and didn't pre-encrypt
         if (isEncrypted && (iv == null || iv.isEmpty)) {
           iv = VaultCrypto.generateIvHex();
           bytes = VaultCrypto.encryptBytes(
@@ -202,40 +240,39 @@ class VaultServer extends ChangeNotifier {
       }
     });
 
-    // Download Handler (Serves directly from RAM, auto-destructs if burn-after-reading)
-    // If PIN is provided and item is encrypted, seamlessly decrypts on the fly for mobile clients!
-        // Download Handler (Serves directly from RAM, auto-destructs if burn-after-reading)
-    // If PIN is provided and item is encrypted, seamlessly decrypts on the fly for mobile clients!
+    // Download Handler (Serves directly from RAM, auto-destructs if burn-after-reading - Requires Authentication)
     router.get('/api/download/<id>', (Request req, String id) {
       final clientIp = _extractClientIp(req);
       if (rateLimiter.isLocked(clientIp)) {
-        return Response(429, body: 'Rate limit exceeded');
+        return Response(429,
+            body: 'Rate limit exceeded. Locked out for 5 minutes.',
+            headers: {'content-type': 'text/plain; charset=utf-8'});
+      }
+
+      if (!_isAuthorized(req, clientIp)) {
+        return Response(401,
+            body: 'Gecersiz veya eksik PIN! Dosya indirilemez.',
+            headers: {'content-type': 'text/plain; charset=utf-8'});
       }
 
       final item = memory.getItem(id);
       if (item == null) {
-        return Response.notFound('Dosya bulunamadi veya RAM\'den imha edildi');
+        return Response.notFound("Dosya bulunamadi veya RAM'den imha edildi");
       }
 
-      final clientPin = req.headers['x-pin'] ?? req.url.queryParameters['pin'];
       Uint8List outputBytes = item.bytes;
 
       // Decrypt on the fly if client provides correct PIN and item was encrypted
       if (item.isEncrypted) {
-        if (clientPin == _pin) {
-          try {
-            outputBytes = VaultCrypto.decryptBytes(
-              cipherBytes: item.bytes,
-              pin: _pin,
-              saltHex: item.salt ?? _saltHex,
-              ivHex: item.iv ?? VaultCrypto.generateIvHex(),
-            );
-          } catch (_) {
-            // If decrypt fails, serve raw
-          }
-        } else {
-          // Wrong PIN or missing PIN for encrypted item
-          return Response.forbidden('Gecersiz PIN! Sifreli dosya indirilemez.');
+        try {
+          outputBytes = VaultCrypto.decryptBytes(
+            cipherBytes: item.bytes,
+            pin: _pin,
+            saltHex: item.salt ?? _saltHex,
+            ivHex: item.iv ?? VaultCrypto.generateIvHex(),
+          );
+        } catch (_) {
+          return Response.internalServerError(body: 'Sifre cozme hatasi');
         }
       }
 
@@ -257,14 +294,28 @@ class VaultServer extends ChangeNotifier {
       );
     });
 
-    // Delete Item
+    // Delete Item (Requires Authentication)
     router.delete('/api/files/<id>', (Request req, String id) {
+      final clientIp = _extractClientIp(req);
+      if (rateLimiter.isLocked(clientIp)) {
+        return Response(429, body: jsonEncode({'error': 'Rate limit exceeded'}), headers: {'content-type': 'application/json'});
+      }
+      if (!_isAuthorized(req, clientIp)) {
+        return Response(401, body: jsonEncode({'error': 'Unauthorized: Valid PIN required'}), headers: {'content-type': 'application/json'});
+      }
       memory.shredItem(id);
       return Response.ok(jsonEncode({'success': true}), headers: {'content-type': 'application/json'});
     });
 
-    // Emergency Panic Purge
+    // Emergency Panic Purge (Requires Authentication)
     router.post('/api/panic', (Request req) {
+      final clientIp = _extractClientIp(req);
+      if (rateLimiter.isLocked(clientIp)) {
+        return Response(429, body: jsonEncode({'error': 'Rate limit exceeded'}), headers: {'content-type': 'application/json'});
+      }
+      if (!_isAuthorized(req, clientIp)) {
+        return Response(401, body: jsonEncode({'error': 'Unauthorized: Valid PIN required'}), headers: {'content-type': 'application/json'});
+      }
       memory.panicWipe();
       return Response.ok(jsonEncode({'success': true, 'message': 'All memory purged'}), headers: {'content-type': 'application/json'});
     });
@@ -274,7 +325,7 @@ class VaultServer extends ChangeNotifier {
       const headers = {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Origin, Content-Type, Accept, X-Filename, X-MimeType, X-IV, X-Salt, X-Burn, X-Encrypted, X-Client-Device, X-Pin',
+        'Access-Control-Allow-Headers': 'Origin, Content-Type, Accept, X-Filename, X-MimeType, X-IV, X-Salt, X-Burn, X-Encrypted, X-Client-Device, X-Pin, X-Vault-PIN',
         'Access-Control-Expose-Headers': 'X-IV, X-Salt, X-Encrypted, Content-Disposition',
       };
 
@@ -307,6 +358,20 @@ class VaultServer extends ChangeNotifier {
       _isRunning = true;
       notifyListeners();
     }
+  }
+
+    bool _isAuthorized(Request req, String clientIp) {
+    final clientPin = req.headers['x-vault-pin'] ?? req.headers['x-pin'] ?? req.url.queryParameters['pin'];
+    if (clientPin == null || clientPin.isEmpty) {
+      rateLimiter.recordFailure(clientIp);
+      return false;
+    }
+    if (clientPin == _pin) {
+      rateLimiter.recordSuccess(clientIp);
+      return true;
+    }
+    rateLimiter.recordFailure(clientIp);
+    return false;
   }
 
   String _extractClientIp(Request req) {

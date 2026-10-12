@@ -51,3 +51,15 @@ GhostVault, **%100 açık kaynak kodlu** ve şeffaf bir projedir. Tüm kaynak ko
    ```bash
    sudo xattr -rd com.apple.quarantine /Applications/GhostVault.app
    ```
+
+---
+
+### 🔏 Dosya Bütünlük Doğrulaması (SHA-256 Verification)
+GhostVault v1.1.0 `GhostVault_Setup.exe` resmi SHA-256 değeri:
+```text
+e0e989b9c627bb353e2748c952ff31d08189f5f5cc208161b535036b1c682882
+```
+Dosyanın değiştirilmediğinden ve orijinal derlemeden geldiğinden emin olmak için:
+```powershell
+Get-FileHash -Algorithm SHA256 .\GhostVault_Setup.exe
+```

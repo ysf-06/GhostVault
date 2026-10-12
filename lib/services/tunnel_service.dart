@@ -122,7 +122,7 @@ class TunnelService extends ChangeNotifier {
       final process = await Process.start(
         'ssh',
         [
-          '-o', 'StrictHostKeyChecking=no',
+          '-o', 'StrictHostKeyChecking=accept-new',
           '-o', 'ServerAliveInterval=30',
           '-R', '80:127.0.0.1:$localPort',
           'nokey@localhost.run',

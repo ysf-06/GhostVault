@@ -1,0 +1,10 @@
+^C:\C_PROJECTS\GHOSTVAULT\BUILD\WINDOWS\X64\CMAKEFILES\1CC03D249885152EA66F53761DDD3064\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/C_Projects/GhostVault/windows -BC:/C_Projects/GhostVault/build/windows/x64 --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/C_Projects/GhostVault/build/windows/x64/ghost_vault.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
